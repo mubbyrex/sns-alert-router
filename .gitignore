@@ -16,3 +16,5 @@ crash.*.log
 
 # .terraform.lock.hcl is intentionally NOT ignored — the dependency lock
 # file is meant to be committed so provider versions are reproducible.
+CLAUDE.md
+specs/
