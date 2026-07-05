@@ -149,7 +149,6 @@ fails **silently or confusingly**, so they're worth knowing before you debug.
 | `modules/receivers/slack/` | One AWS Chatbot Slack channel receiver (dedicated read-only IAM role). |
 | `modules/receivers/email/` | SNS email subscriptions per subscribed tier.                           |
 | `examples/standalone/`     | Runnable core + both receivers + noise-filtering EventBridge rule.     |
-| `specs/`                   | Per-phase `requirements.md` / `design.md` / `tasks.md`.                |
 
 ## Requirements
 
