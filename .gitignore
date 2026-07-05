@@ -1,0 +1,18 @@
+# Terraform state — never commit (may contain secrets/real identifiers)
+*.tfstate
+*.tfstate.*
+
+# Terraform working dirs and plan output
+.terraform/
+*.tfplan
+
+# Variable files with real values — only *.tfvars.example is allowed
+*.tfvars
+!*.tfvars.example
+
+# Crash logs
+crash.log
+crash.*.log
+
+# .terraform.lock.hcl is intentionally NOT ignored — the dependency lock
+# file is meant to be committed so provider versions are reproducible.

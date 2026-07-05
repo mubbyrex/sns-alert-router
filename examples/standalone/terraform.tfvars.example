@@ -1,0 +1,22 @@
+# Copy this file to terraform.tfvars and replace the placeholder values below
+# with your own. terraform.tfvars is gitignored (it holds real IDs) — only this
+# .example file is committed. All values here are FAKE placeholders.
+
+# Prefix for the SNS topic names this example creates (e.g. "<prefix>-critical").
+# Any string unique within your account; only needs changing if it collides.
+name_prefix = "alert-router-example"
+
+# Slack workspace (team) ID AWS Chatbot is authorized against.
+# Find it: AWS console -> Amazon Q Developer in chat applications -> your
+# configured Slack workspace (or Slack -> workspace settings). Starts with "T".
+slack_team_id = "T00000000000"
+
+# Slack channel ID (NOT the channel name) that receives CRITICAL alerts.
+# Find it: in Slack, right-click the channel -> View channel details -> the ID
+# at the bottom of the panel. Starts with "C".
+slack_channel_id = "C00000000000"
+
+# Email address(es) subscribed to ALL severity tiers. Each address gets an SNS
+# confirmation email it must click before any delivery works. Use your own real
+# address(es) here; this placeholder will never deliver.
+oncall_email_addresses = ["oncall@example.com"]
