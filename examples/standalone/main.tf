@@ -38,6 +38,17 @@ module "oncall_email" {
   email_addresses = var.oncall_email_addresses
 }
 
+# Phase 2 integration — ECS. Adds EventBridge rules for real ECS events (task
+# stopped with noise filtering, deployment failed/in-progress) targeting the
+# same core topics. Demonstrates that an integration module composes onto the
+# Phase 1 backbone with just topic_arns + name_prefix, no receiver/core changes.
+module "ecs_alerts" {
+  source = "../../modules/integrations/ecs"
+
+  topic_arns  = module.core.topic_arns
+  name_prefix = var.name_prefix
+}
+
 # =============================================================================
 # Noise-filtering EventBridge rule (REQ-4)
 # -----------------------------------------------------------------------------

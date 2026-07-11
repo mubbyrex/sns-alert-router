@@ -21,19 +21,24 @@ EventBridge, or Chatbot already do, it doesn't belong here.
 ## Architecture
 
 ```text
-[ Any source: CloudWatch Alarm, EventBridge rule, or a direct sns:Publish ]
+[ AWS services: ECS / CodePipeline / CodeDeploy / ECR ]     [ CloudWatch Alarms,
+        │                                                     direct sns:Publish ]
+        ▼                                                            │
+  modules/integrations/<service>                                     │
+  • EventBridge rules: severity routing + noise filtering            │
+  • input_transformer → Chatbot custom notification schema           │
+        │                                                            │
+        ▼                                                            ▼
+   modules/core ───────────────────────────────────────────────────────
+   • one SNS topic per severity tier (critical/warning/info)
+   • least-privilege topic policy per topic
+   • knows NOTHING about Slack/Teams/email
+   • output: topic_arns (map: tier → ARN)
         │
-        ▼
-   modules/core ──────────────────────────────────────────────┐
-   • one SNS topic per severity tier (critical/warning/info)   │
-   • least-privilege topic policy per topic                    │
-   • knows NOTHING about Slack/Teams/email                     │
-   • output: topic_arns (map: tier → ARN)                      │
-        │                                                       │
         │ topic_arns consumed by however many receivers you declare
         ▼                         ▼                            ▼
   receivers/slack           receivers/email            receivers/teams
-  (Phase 1, tested)         (Phase 1, tested)          (Phase 3 — not built)
+  (tested)                  (tested)                   (roadmap — not built)
 ```
 
 `modules/core` only creates topics and exposes their ARNs. Every delivery
@@ -45,16 +50,21 @@ type is added.
 
 ## Usage
 
+Submodules are addressed with the registry's double-slash syntax
+(`<namespace>/<name>/<provider>//modules/<path>`). If you consume the repo
+directly from GitHub instead, the same double-slash form applies:
+`github.com/mubbyrex/terraform-aws-sns-alert-router//modules/core`.
+
 ```hcl
 # One core backbone: critical / warning / info SNS topics.
 module "core" {
-  source      = "./modules/core"
+  source      = "mubbyrex/sns-alert-router/aws//modules/core"
   name_prefix = "alert-router"
 }
 
 # A Slack channel that only wants CRITICAL alerts.
 module "platform_critical" {
-  source = "./modules/receivers/slack"
+  source = "mubbyrex/sns-alert-router/aws//modules/receivers/slack"
 
   configuration_name = "alert-router-platform-critical"
   topic_arns         = module.core.topic_arns
@@ -66,18 +76,49 @@ module "platform_critical" {
 
 # An email list that wants EVERYTHING.
 module "oncall_email" {
-  source = "./modules/receivers/email"
+  source = "mubbyrex/sns-alert-router/aws//modules/receivers/email"
 
   topic_arns      = module.core.topic_arns
   severity_tiers  = ["critical", "warning", "info"]
   email_addresses = ["oncall@example.com"]
 }
+
+# An AWS-service integration: real ECS events routed by severity, with the
+# noise filtering already encoded (deploy scale-downs and manual stops don't
+# page anyone; real crashes do).
+module "ecs_alerts" {
+  source = "mubbyrex/sns-alert-router/aws//modules/integrations/ecs"
+
+  topic_arns  = module.core.topic_arns
+  name_prefix = "alert-router"
+}
 ```
 
-Adding a third receiver — or a whole new receiver *type* — is one more `module`
-block here and zero changes to `modules/core`. A runnable version of exactly
-this composition, plus a noise-filtering EventBridge example, lives in
+Adding a third receiver — or a whole new receiver *type* or integration — is one
+more `module` block here and zero changes to `modules/core`. A runnable version
+of exactly this composition lives in
 [`examples/standalone/`](examples/standalone/).
+
+## Integrations
+
+Each integration is an independent, optional module under
+`modules/integrations/<service>/` that creates **only EventBridge rules and
+targets** — no topics, no IAM, no receiver knowledge. All share the same input
+contract (`topic_arns` + `name_prefix` + service-specific filters) and emit the
+Chatbot custom notification schema.
+
+| Module | What it routes | Routing summary |
+| ------ | -------------- | --------------- |
+| [`integrations/ecs`](modules/integrations/ecs/) | ECS task stops + service deployments | Unexpected task stop (`stopCode` not excluded) → critical; deployment `ERROR` → critical; deployment in-progress → info. Deploy scale-downs and manual stops are filtered by default (`stop_code_exclusions`). |
+| [`integrations/codepipeline`](modules/integrations/codepipeline/) | Pipeline execution state changes | `FAILED` → critical (with console execution deep link); `STARTED`/`SUCCEEDED` → info. Optional `pipeline_names` filter. |
+| [`integrations/codedeploy`](modules/integrations/codedeploy/) | Deployment state changes | `FAILURE` → critical, `STOP` → warning (both with console deep link); `START`/`SUCCESS` → info. Optional `application_names` filter. |
+| [`integrations/ecr`](modules/integrations/ecr/) | Image scan findings (basic scanning) | `CRITICAL`/`HIGH` findings → critical; `MEDIUM`-only → warning; clean/`LOW` → info — mutually exclusive, one alert per scan. Optional `repository_names` filter. |
+
+**CloudWatch Alarms need no integration module.** A CloudWatch Alarm publishes
+to SNS natively — point its `alarm_actions` at the tier ARN from
+`module.core.topic_arns` and it just works, zero extra configuration. That
+wiring is deliberately *not* re-built here (see the boundary note at the top of
+this README).
 
 ## Gotchas (discovered during end-to-end testing)
 
@@ -124,6 +165,9 @@ fails **silently or confusingly**, so they're worth knowing before you debug.
 
 - **Slack receiver — tested and working** (`modules/receivers/slack`).
 - **Email receiver — tested and working** (`modules/receivers/email`).
+- **Integrations — ECS, CodePipeline, CodeDeploy, ECR** — event patterns
+  verified against AWS's `TestEventPattern` API; ECS wired into the runnable
+  example.
 - **Teams receiver — not built.** Teams uses the *same* underlying AWS Chatbot
   pattern (there is an `aws_chatbot_teams_channel_configuration` resource), so
   the abstraction already accommodates it — but it is **not implemented or tested
@@ -131,24 +175,25 @@ fails **silently or confusingly**, so they're worth knowing before you debug.
 
 ## Roadmap
 
-- **Phase 1 (this repo) — core alert routing.** Severity-tiered SNS topics,
-  least-privilege IAM, EventBridge noise-filtering example, Slack + email
-  receivers. ✅ Done.
-- **Phase 2 — ECS reference integration.** The first concrete service
-  integration proving the pattern (ECS task-stop noise filtering, etc.), layered
-  on top of the Phase 1 backbone. Not started.
-- **Phase 3 — Teams receiver module.** `modules/receivers/teams/` built and
+- **Phase 1 — core alert routing.** Severity-tiered SNS topics, least-privilege
+  IAM, EventBridge noise-filtering example, Slack + email receivers. ✅ Done.
+- **Phase 2 — CI/CD + compute integrations.** ECS, CodePipeline, CodeDeploy,
+  and ECR integration modules, each independent and optional. ✅ Done.
+- **Phase 3 — RDS + Lambda integrations.** Same integration-module pattern for
+  RDS events and Lambda error alerting. Not started.
+- **Phase 4 — Teams receiver module.** `modules/receivers/teams/` built and
   tested against the same `topic_arns` + `severity_tiers` contract, including the
   Teams-specific Adaptive Card formatting Slack doesn't require. Not started.
 
 ## Repo layout
 
-| Path                       | What                                                                   |
-| -------------------------- | ---------------------------------------------------------------------- |
-| `modules/core/`            | Severity-tiered SNS topics + least-privilege topic policies.           |
-| `modules/receivers/slack/` | One AWS Chatbot Slack channel receiver (dedicated read-only IAM role). |
-| `modules/receivers/email/` | SNS email subscriptions per subscribed tier.                           |
-| `examples/standalone/`     | Runnable core + both receivers + noise-filtering EventBridge rule.     |
+| Path                       | What                                                                             |
+| -------------------------- | -------------------------------------------------------------------------------- |
+| `modules/core/`            | Severity-tiered SNS topics + least-privilege topic policies.                     |
+| `modules/receivers/slack/` | One AWS Chatbot Slack channel receiver (dedicated read-only IAM role).           |
+| `modules/receivers/email/` | SNS email subscriptions per subscribed tier.                                     |
+| `modules/integrations/`    | Per-service EventBridge routing: `ecs/`, `codepipeline/`, `codedeploy/`, `ecr/`. |
+| `examples/standalone/`     | Runnable core + both receivers + ECS integration + noise-filter example.         |
 
 ## Requirements
 

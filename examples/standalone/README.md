@@ -107,12 +107,75 @@ aws events put-events --entries '[
 ]'
 ```
 
+### 4. Test the ECS integration (Phase 2)
+
+The `ecs_alerts` module adds a task-stopped rule that routes to the **critical**
+topic while filtering out routine stops (deploy scale-downs, manual stops) by
+`stopCode`. The two events below are the canonical shapes; both were verified
+against the rule with `aws events test-event-pattern` (payload 1 matches,
+payload 2 is filtered).
+
+**Payload 1 — should alert (task stopped unexpectedly):**
+
+```json
+{
+  "source": "aws.ecs",
+  "detail-type": "ECS Task State Change",
+  "detail": {
+    "lastStatus": "STOPPED",
+    "stopCode": "EssentialContainerExited",
+    "stoppedReason": "Essential container in task exited",
+    "clusterArn": "arn:aws:ecs:us-east-1:123456789012:cluster/example",
+    "taskArn": "arn:aws:ecs:us-east-1:123456789012:task/example/abc123",
+    "containers": [{"exitCode": 1}]
+  }
+}
+```
+
+**Payload 2 — should be filtered (deploy-triggered stop):**
+
+```json
+{
+  "source": "aws.ecs",
+  "detail-type": "ECS Task State Change",
+  "detail": {
+    "lastStatus": "STOPPED",
+    "stopCode": "ServiceSchedulerInitiated",
+    "stoppedReason": "Scaling activity initiated by (deployment abc123)",
+    "clusterArn": "arn:aws:ecs:us-east-1:123456789012:cluster/example",
+    "taskArn": "arn:aws:ecs:us-east-1:123456789012:task/example/def456",
+    "containers": [{"exitCode": 0}]
+  }
+}
+```
+
+Verify the rule logic (this is what confirms routing, and it needs no
+infrastructure) — save a payload to `event.json` and run:
+
+```bash
+aws events test-event-pattern \
+  --event-pattern '{"source":["aws.ecs"],"detail-type":["ECS Task State Change"],"detail":{"lastStatus":["STOPPED"],"stopCode":[{"anything-but":["ServiceSchedulerInitiated","UserInitiated"]}]}}' \
+  --event "$(cat event.json)"
+# Payload 1 -> "Result": true    Payload 2 -> "Result": false
+```
+
+> **Why not `put-events` for this one?** EventBridge reserves the `aws.` source
+> prefix for genuine AWS service events. A `put-events` call with
+> `"Source": "aws.ecs"` is **accepted by the API (returns an `EventId`) but is
+> not delivered to your rules** — you cannot spoof an `aws.ecs` event. So a real
+> end-to-end test of this rule requires an **actual ECS task stop** (or, for a
+> dry run, temporarily point a copy of the rule at a custom source like
+> `com.sns-alert-router.example`). The `test-event-pattern` check above is the
+> reliable way to confirm the routing without real ECS.
+
 ## What to expect
 
-| Event                                     | Slack (`platform_critical`, critical-only) | Email (`oncall_email`, all tiers) |
-| ----------------------------------------- | ------------------------------------------ | --------------------------------- |
-| `trigger: threshold_breached` (critical)  | delivered                                  | delivered (once confirmed)        |
-| `trigger: scheduled` / `user_initiated`   | filtered out                               | filtered out                      |
+| Event                                       | Slack (`platform_critical`, critical-only) | Email (`oncall_email`, all tiers) |
+| ------------------------------------------- | ------------------------------------------ | --------------------------------- |
+| `trigger: threshold_breached` (critical)    | delivered                                  | delivered (once confirmed)        |
+| `trigger: scheduled` / `user_initiated`     | filtered out                               | filtered out                      |
+| ECS task stopped, `EssentialContainerExited`| delivered (critical)                       | delivered (once confirmed)        |
+| ECS task stopped, `ServiceSchedulerInitiated`| filtered out                              | filtered out                      |
 
 The Slack channel only ever sees critical events (it subscribes to the critical
 topic only). Email sees any severity routed to any of the three topics. Routine
